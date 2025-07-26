@@ -422,7 +422,7 @@ class MPClient(EngineCoreClient):
                             logger.warning(
                                 "Child process unexpectedly failed with "
                                 "exitcode=%d. pid=%d", exitcode, pid)
-                        self.resources.engine_dead = True
+                        self._finalizer()
 
                     signal.signal(signal.SIGCHLD, sigchld_handler)
 
@@ -743,6 +743,8 @@ class AsyncMPClient(MPClient):
 
                     if outputs.outputs or outputs.scheduler_stats:
                         outputs_queue.put_nowait(outputs)
+            except asyncio.CancelledError:
+                outputs_queue.put_nowait(EngineDeadError())
             except Exception as e:
                 outputs_queue.put_nowait(e)
 
