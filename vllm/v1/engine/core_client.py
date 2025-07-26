@@ -412,7 +412,7 @@ class MPClient(EngineCoreClient):
                     self.resources.coordinator = coordinator
                     self.resources.engine_manager = engine_manager
 
-                if isinstance(self.resources.engine_manager, CoreEngineProcManager):
+                if isinstance(engine_manager, CoreEngineProcManager):
                     import os
                     import signal
 
