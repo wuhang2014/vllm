@@ -508,11 +508,8 @@ class WorkerProc:
                 except EOFError:
                     # Parent process has exited, terminate this worker
                     logger.info("Parent process exited, terminating worker")
-                    nonlocal shutdown_requested
-                    if not shutdown_requested:
-                        shutdown_requested = True
-                        # Send signal to self to trigger clean shutdown
-                        os.kill(os.getpid(), signal.SIGTERM)
+                    # Send signal to self to trigger clean shutdown
+                    os.kill(os.getpid(), signal.SIGTERM)
                 except Exception as e:
                     logger.warning(f"Death monitoring error: {e}")
             
