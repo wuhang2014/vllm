@@ -518,7 +518,7 @@ class MPClient(EngineCoreClient):
             sentinels = [proc.sentinel for proc in engine_processes]
             died = multiprocessing.connection.wait(sentinels)
             _self = self_ref()
-            if not _self or getattr(_self, 'shutdown', False):
+            if not _self or _self.resources.engine_dead:
                 return
             _self.resources.engine_dead = True
             proc_name = next(proc.name for proc in engine_processes
