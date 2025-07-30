@@ -442,6 +442,8 @@ class EngineCoreProc(EngineCore):
         client_handshake_address: Optional[str] = None,
         engine_index: int = 0,
     ):
+        self._decorate_logs()
+
         self.input_queue = queue.Queue[tuple[EngineCoreRequestType, Any]]()
         self.output_queue = queue.Queue[Union[tuple[int, EngineCoreOutputs],
                                               bytes]]()
@@ -688,6 +690,15 @@ class EngineCoreProc(EngineCore):
         finally:
             if engine_core is not None:
                 engine_core.shutdown()
+
+    def _decorate_logs(self):
+        # Add process-specific prefix to stdout and stderr before
+        # we initialize the engine.
+        from multiprocessing import current_process
+        process_name = current_process().name
+        pid = os.getpid()
+        _add_prefix(sys.stdout, process_name, pid)
+        _add_prefix(sys.stderr, process_name, pid)
 
     def _init_data_parallel(self, vllm_config: VllmConfig):
         pass
