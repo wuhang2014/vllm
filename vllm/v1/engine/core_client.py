@@ -171,7 +171,11 @@ class EngineCoreClient(ABC):
         running state."""
         raise NotImplementedError
 
-    async def scale_elastic_ep(self, new_data_parallel_size: int) -> None:
+    async def scale_elastic_ep(
+            self,
+            new_data_parallel_size: int,
+            drain_timeout: int = 300,
+            shrinked_dp_rank_ids: Optional[list[int]] = None) -> None:
         raise NotImplementedError
 
     async def get_output_async(self) -> EngineCoreOutputs:
@@ -1167,7 +1171,11 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
         self._ensure_output_queue_task()
         return future
 
-    async def scale_elastic_ep(self, new_data_parallel_size: int) -> None:
+    async def scale_elastic_ep(
+            self,
+            new_data_parallel_size: int,
+            drain_timeout: int = 300,
+            shrinked_dp_rank_ids: Optional[list[int]] = None) -> None:
         """Scale elastic EP data parallel size"""
         cur_data_parallel_size = len(self.core_engines)
 
@@ -1185,7 +1193,8 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
                                             new_data_parallel_size)
         else:
             await self._scale_down_elastic_ep(cur_data_parallel_size,
-                                              new_data_parallel_size)
+                                              new_data_parallel_size,
+                                              shrinked_dp_rank_ids)
 
     async def _scale_up_elastic_ep(self, cur_data_parallel_size: int,
                                    new_data_parallel_size: int) -> None:
@@ -1257,14 +1266,40 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             "[Elastic EP] Scale up completed, new data parallel size: %s",
             new_data_parallel_size)
 
-    async def _scale_down_elastic_ep(self, cur_data_parallel_size: int,
-                                     new_data_parallel_size: int) -> None:
+    async def _scale_down_elastic_ep(
+            self,
+            cur_data_parallel_size: int,
+            new_data_parallel_size: int,
+            shrinked_dp_rank_ids: Optional[list[int]] = None) -> None:
         """Scale down the data parallel size by shutting down and
         reconfiguring existing engine cores."""
         cur_data_parallel_size = len(self.core_engines)
 
         self.vllm_config.parallel_config.data_parallel_master_port = \
             get_open_port()
+
+        # Determine which ranks to shut down
+        if shrinked_dp_rank_ids is not None:
+            # Validate that the specified ranks exist
+            for rank_id in shrinked_dp_rank_ids:
+                if rank_id >= cur_data_parallel_size:
+                    raise ValueError(f"Rank ID {rank_id} does not exist. "
+                                     f"Current data parallel size is "
+                                     f"{cur_data_parallel_size}")
+
+            # Validate that we're shutting down the correct number of ranks
+            expected_ranks_to_shutdown = (cur_data_parallel_size -
+                                          new_data_parallel_size)
+            if len(shrinked_dp_rank_ids) != expected_ranks_to_shutdown:
+                raise ValueError(
+                    f"Expected to shut down {expected_ranks_to_shutdown} "
+                    f"ranks, but got {len(shrinked_dp_rank_ids)} rank IDs")
+
+            ranks_to_shutdown = set(shrinked_dp_rank_ids)
+        else:
+            # Default behavior: shut down the highest-numbered ranks
+            ranks_to_shutdown = set(
+                range(new_data_parallel_size, cur_data_parallel_size))
 
         reconfig_futures = []
         for cur_dp_rank, engine in enumerate(self.core_engines):
@@ -1277,22 +1312,31 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
                 data_parallel_master_ip,
                 new_data_parallel_master_port=self.vllm_config.parallel_config.
                 data_parallel_master_port)
-            if cur_dp_rank >= new_data_parallel_size:
+            if cur_dp_rank in ranks_to_shutdown:
                 reconfig_request.new_data_parallel_rank = \
                 ReconfigureRankType.SHUTDOWN_CURRENT_RANK
             future = await self._send_reconfig_message(reconfig_request,
                                                        engine)
             reconfig_futures.append(future)
 
-        for _ in range(new_data_parallel_size, cur_data_parallel_size):
-            self.core_engines.pop()
+        # Remove engines in reverse order of their rank IDs to maintain
+        # proper indexing when using default behavior
+        if shrinked_dp_rank_ids is not None:
+            # Sort in descending order to remove from the end
+            for rank_id in sorted(shrinked_dp_rank_ids, reverse=True):
+                self.core_engines.pop(rank_id)
+        else:
+            # Default behavior: remove from the end
+            for _ in range(new_data_parallel_size, cur_data_parallel_size):
+                self.core_engines.pop()
 
         await asyncio.gather(*reconfig_futures)
 
         assert isinstance(self.resources.engine_manager,
                           CoreEngineActorManager)
         self.resources.engine_manager.scale_down_elastic_ep(
-            cur_data_parallel_size, new_data_parallel_size)
+            cur_data_parallel_size, new_data_parallel_size,
+            shrinked_dp_rank_ids)
 
         self._ensure_stats_update_task()
         scale_down_marker = msgspec.msgpack.encode(

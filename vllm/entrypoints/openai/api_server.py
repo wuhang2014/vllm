@@ -1070,6 +1070,7 @@ async def scale_elastic_ep(raw_request: Request):
 
     new_data_parallel_size = body.get("new_data_parallel_size")
     drain_timeout = body.get("drain_timeout", 120)  # Default 2 minutes
+    shrinked_dp_rank_ids = body.get("shrinked_dp_rank_ids")
 
     if new_data_parallel_size is None:
         raise HTTPException(status_code=400,
@@ -1085,12 +1086,33 @@ async def scale_elastic_ep(raw_request: Request):
         raise HTTPException(status_code=400,
                             detail="drain_timeout must be a positive integer")
 
+    # Validate shrinked_dp_rank_ids if provided
+    if shrinked_dp_rank_ids is not None:
+        if not isinstance(shrinked_dp_rank_ids, list):
+            raise HTTPException(
+                status_code=400,
+                detail="shrinked_dp_rank_ids must be a list of integers")
+
+        if not all(
+                isinstance(rank_id, int) and rank_id >= 0
+                for rank_id in shrinked_dp_rank_ids):
+            raise HTTPException(
+                status_code=400,
+                detail="All elements in shrinked_dp_rank_ids must be "
+                "non-negative integers")
+
+        if len(set(shrinked_dp_rank_ids)) != len(shrinked_dp_rank_ids):
+            raise HTTPException(
+                status_code=400,
+                detail="shrinked_dp_rank_ids cannot contain duplicate values")
+
     # Set scaling flag to prevent new requests
     global _scaling_elastic_ep
     _scaling_elastic_ep = True
     client = engine_client(raw_request)
     try:
-        await client.scale_elastic_ep(new_data_parallel_size, drain_timeout)
+        await client.scale_elastic_ep(new_data_parallel_size, drain_timeout,
+                                      shrinked_dp_rank_ids)
         return JSONResponse({
             "message":
             f"Scaled to {new_data_parallel_size} "

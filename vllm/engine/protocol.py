@@ -3,7 +3,7 @@
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Mapping, Optional
+from typing import AsyncGenerator, List, Mapping, Optional
 
 from vllm.beam_search import BeamSearchSequence, create_sort_beams_key_function
 from vllm.config import DecodingConfig, ModelConfig, VllmConfig
@@ -323,8 +323,10 @@ class EngineClient(ABC):
         """Load a new LoRA adapter into the engine for future requests."""
         ...
 
-    async def scale_elastic_ep(self,
-                               new_data_parallel_size: int,
-                               drain_timeout: int = 300) -> None:
+    async def scale_elastic_ep(
+            self,
+            new_data_parallel_size: int,
+            drain_timeout: int = 300,
+            shrinked_dp_rank_ids: Optional[List[int]] = None) -> None:
         """Scale the engine"""
         raise NotImplementedError

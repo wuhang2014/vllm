@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from multiprocessing import Process, connection
 from multiprocessing.process import BaseProcess
-from typing import TYPE_CHECKING, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 from unittest.mock import patch
 
 import msgspec
@@ -206,8 +206,13 @@ class CoreEngineActorManager:
 
         from vllm.v1.engine.core import DPEngineCoreActor
 
-        self.local_engine_actors: list[ray.ActorHandle] = []
-        self.remote_engine_actors: list[ray.ActorHandle] = []
+        # Use dictionaries to map rank IDs to actors for precise control
+        self.engine_actors: dict[int, ray.ActorHandle] = {}
+        self.engine_actor_is_local: dict[int, bool] = {}
+
+        # Rank-based mapping for placement groups
+        self.placement_groups: dict[int, PlacementGroup] = {}
+        self.placement_group_is_local_dict: dict[int, bool] = {}
 
         env_vars_list = get_env_vars_to_copy(destination="DPEngineCoreActor")
         self.env_vars_dict = {
@@ -239,15 +244,12 @@ class CoreEngineActorManager:
                 "have the same length")
             logger.info("Using provided placement groups")
             # TODO(rui): validate passed-in placement groups
-            self.created_placement_groups = []
         else:
             placement_groups, local_dp_ranks = \
                 CoreEngineActorManager.create_dp_placement_groups(vllm_config)
-            self.created_placement_groups = placement_groups
         assert len(placement_groups) == dp_size, (
             "Number of placement groups must match data parallel size")
 
-        self.placement_group_is_local = []
         refs = []
         for index, local_index, pg in zip(range(dp_size), local_dp_ranks,
                                           placement_groups):
@@ -266,16 +268,20 @@ class CoreEngineActorManager:
                                                 addresses=addresses,
                                                 dp_rank=index,
                                                 local_dp_rank=local_index)
-            if local_client:
-                self.local_engine_actors.append(actor)
-            else:
-                self.remote_engine_actors.append(actor)
-            self.placement_group_is_local.append(local_client)
+
+            # Store in rank-based data structures
+            self.engine_actors[index] = actor
+            self.engine_actor_is_local[index] = local_client
+            self.placement_groups[index] = pg
+            self.placement_group_is_local_dict[index] = local_client
+
             refs.append(actor.wait_for_init.remote())
 
         ray.get(refs)
         self.run_refs = []
-        for actor in self.local_engine_actors + self.remote_engine_actors:
+        # Use the rank-based mapping for consistent ordering
+        for rank_id in sorted(self.engine_actors.keys()):
+            actor = self.engine_actors[rank_id]
             self.run_refs.append(actor.run.remote())
 
     @staticmethod
@@ -455,8 +461,7 @@ class CoreEngineActorManager:
 
         from vllm.v1.engine.core import DPEngineCoreActor
 
-        cur_data_parallel_size = len(self.local_engine_actors) + \
-            len(self.remote_engine_actors)
+        cur_data_parallel_size = len(self.engine_actors)
 
         assert new_data_parallel_size > cur_data_parallel_size, (
             f"New data parallel size {new_data_parallel_size} must be greater "
@@ -508,27 +513,21 @@ class CoreEngineActorManager:
                     dp_rank=rank,
                     local_dp_rank=local_rank)
 
-            if local_client:
-                self.local_engine_actors.append(actor)
-            else:
-                self.remote_engine_actors.append(actor)
-            self.created_placement_groups.append(pg)
-            self.placement_group_is_local.append(local_client)
+            # Store in rank-based data structures
+            self.engine_actors[rank] = actor
+            self.engine_actor_is_local[rank] = local_client
+            self.placement_groups[rank] = pg
+            self.placement_group_is_local_dict[rank] = local_client
 
-        ray.get([
-            actor.wait_for_init.remote()
-            for actor in (self.local_engine_actors[-new_local_engines:]
-                          if new_local_engines > 0 else []) +
-            self.remote_engine_actors[-(len(placement_groups) -
-                                        new_local_engines):]
-        ])
+        # Get newly added actors for initialization
+        new_actors = [
+            self.engine_actors[cur_data_parallel_size + i]
+            for i in range(len(placement_groups))
+        ]
 
-        actors = (self.local_engine_actors[-new_local_engines:]
-                  if new_local_engines > 0 else []) + \
-            self.remote_engine_actors[-(len(placement_groups) -
-                                        new_local_engines):]
+        ray.get([actor.wait_for_init.remote() for actor in new_actors])
 
-        for actor in actors:
+        for actor in new_actors:
             self.run_refs.append(actor.run.remote())
 
         cur_vllm_config.parallel_config.data_parallel_size = \
@@ -539,30 +538,100 @@ class CoreEngineActorManager:
             cur_vllm_config.parallel_config.data_parallel_size_local += \
                 new_local_engines
 
-    def scale_down_elastic_ep(self, cur_data_parallel_size: int,
-                              new_data_parallel_size: int) -> None:
+    def scale_down_elastic_ep(
+            self,
+            cur_data_parallel_size: int,
+            new_data_parallel_size: int,
+            shrinked_dp_rank_ids: Optional[list[int]] = None) -> None:
         import ray
         assert cur_data_parallel_size > new_data_parallel_size, (
             f"cur_data_parallel_size {cur_data_parallel_size} must be greater "
             f"than new_data_parallel_size {new_data_parallel_size} "
             "for scale down")
-        for _ in range(cur_data_parallel_size - new_data_parallel_size):
-            pg = self.created_placement_groups.pop()
-            is_local = self.placement_group_is_local.pop()
-            if is_local:
-                self.local_engine_actors.pop()
-            else:
-                self.remote_engine_actors.pop()
-            ray.util.remove_placement_group(pg)
+
+        num_ranks_to_remove = cur_data_parallel_size - new_data_parallel_size
+
+        if shrinked_dp_rank_ids is not None:
+            # Validate specified rank IDs
+            for rank_id in shrinked_dp_rank_ids:
+                if rank_id not in self.engine_actors:
+                    raise ValueError(
+                        f"Rank ID {rank_id} does not exist in engine actors")
+                if rank_id >= cur_data_parallel_size:
+                    raise ValueError(
+                        f"Rank ID {rank_id} >= current data parallel size "
+                        f"{cur_data_parallel_size}")
+
+            if len(shrinked_dp_rank_ids) != num_ranks_to_remove:
+                raise ValueError(
+                    f"Expected to remove {num_ranks_to_remove} ranks, "
+                    f"but got {len(shrinked_dp_rank_ids)} rank IDs")
+
+            ranks_to_remove = set(shrinked_dp_rank_ids)
+        else:
+            # Default behavior: remove the highest-numbered ranks
+            ranks_to_remove = set(
+                range(new_data_parallel_size, cur_data_parallel_size))
+
+        for rank_id in ranks_to_remove:
+            # Remove from rank-based mapping
+            self.engine_actors.pop(rank_id, None)
+            self.engine_actor_is_local.pop(rank_id, None)
+            pg = self.placement_groups.pop(rank_id, None)
+            self.placement_group_is_local_dict.pop(rank_id, None)
+
+            # Remove placement group
+            if pg is not None:
+                ray.util.remove_placement_group(pg)
 
     def get_run_refs(self):
         return self.run_refs
 
+    def get_all_actors(self) -> list[Any]:
+        """Get all engine actors as a list."""
+        return list(self.engine_actors.values())
+
+    def get_local_actors(self) -> list[Any]:
+        """Get all local engine actors."""
+        return [
+            self.engine_actors[rank_id]
+            for rank_id, is_local in self.engine_actor_is_local.items()
+            if is_local
+        ]
+
+    def get_remote_actors(self) -> list[Any]:
+        """Get all remote engine actors."""
+        return [
+            self.engine_actors[rank_id]
+            for rank_id, is_local in self.engine_actor_is_local.items()
+            if not is_local
+        ]
+
+    def get_actor_by_rank(self, rank_id: int) -> Optional[Any]:
+        """Get engine actor by rank ID."""
+        return self.engine_actors.get(rank_id)
+
+    def is_rank_local(self, rank_id: int) -> Optional[bool]:
+        """Check if a rank is local."""
+        return self.engine_actor_is_local.get(rank_id)
+
+    def get_placement_group_by_rank(self, rank_id: int) -> Optional[Any]:
+        """Get placement group by rank ID."""
+        return self.placement_groups.get(rank_id)
+
+    def is_placement_group_local(self, rank_id: int) -> Optional[bool]:
+        """Check if a placement group is local."""
+        return self.placement_group_is_local_dict.get(rank_id)
+
     def close(self):
         import ray
-        for actor in self.local_engine_actors + self.remote_engine_actors:
+
+        # Use the rank-based mapping for actor cleanup
+        for actor in self.engine_actors.values():
             ray.kill(actor)
-        for pg in self.created_placement_groups:
+
+        # Clean up placement groups
+        for pg in self.placement_groups.values():
             ray.util.remove_placement_group(pg)
 
 
