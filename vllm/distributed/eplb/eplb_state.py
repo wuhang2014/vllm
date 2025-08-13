@@ -441,8 +441,10 @@ class EplbState:
             )
             logical_expert_load_window.scatter_add_(
                 dim=-1,
-                index=self.physical_to_logical_map.unsqueeze(0).expand_as(
-                    self.expert_load_window).long(),
+                index=self.physical_to_logical_map.view(
+                    model.num_moe_layers,
+                    model.num_physical_experts).unsqueeze(0).expand_as(
+                        self.expert_load_window).long(),
                 src=self.expert_load_window,
             )
 
