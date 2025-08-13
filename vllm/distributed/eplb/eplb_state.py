@@ -431,7 +431,18 @@ class EplbState:
                         "(profile)" if is_profile else "")
 
         if global_expert_load is None:
-            # Map the physical expert load to global logical experts
+            # This mapping is only used here, so we do not store it in the state
+            if self.physical_to_logical_map.size(
+                    -1) < model.num_physical_experts:
+                # Pad with zeros to expand
+                padding_needed = (model.num_physical_experts -
+                                  self.physical_to_logical_map.size(-1))
+                local_physical_to_logical_map = torch.nn.functional.pad(
+                    self.physical_to_logical_map, (0, padding_needed))
+            else:
+                local_physical_to_logical_map = self.physical_to_logical_map
+
+            # Map the local physical expert load to global logical experts
             logical_expert_load_window = torch.zeros(
                 self.expert_load_window_size,
                 model.num_moe_layers,
@@ -441,9 +452,8 @@ class EplbState:
             )
             logical_expert_load_window.scatter_add_(
                 dim=-1,
-                index=self.physical_to_logical_map[:, :model.
-                                                   num_physical_experts].
-                unsqueeze(0).expand_as(self.expert_load_window).long(),
+                index=local_physical_to_logical_map.unsqueeze(0).expand_as(
+                    self.expert_load_window).long(),
                 src=self.expert_load_window,
             )
 
