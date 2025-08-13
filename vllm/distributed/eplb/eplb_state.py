@@ -440,7 +440,8 @@ class EplbState:
                 local_physical_to_logical_map = torch.nn.functional.pad(
                     self.physical_to_logical_map, (0, padding_needed))
             else:
-                local_physical_to_logical_map = self.physical_to_logical_map
+                local_physical_to_logical_map = (self.physical_to_logical_map[
+                    ..., :model.num_physical_experts])
 
             # Map the local physical expert load to global logical experts
             logical_expert_load_window = torch.zeros(
