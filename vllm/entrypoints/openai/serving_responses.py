@@ -238,10 +238,10 @@ class OpenAIServingResponses(OpenAIServing):
             raw_request.state.request_metadata = request_metadata
 
         if self.tool_server is not None and isinstance(
-                self.tool_server, MCPToolServer
-        ) and (request.background or request.stream) and request.tools and any(
-                tool.type in ["web_search_preview", "code_interpreter"]
-                for tool in request.tools):
+                self.tool_server,
+                MCPToolServer) and request.stream and request.tools and any(
+                    tool.type in ["web_search_preview", "code_interpreter"]
+                    for tool in request.tools):
             return self.create_error_response(
                 "MCP tool server is not supported in background mode and "
                 "streaming mode")
@@ -264,12 +264,15 @@ class OpenAIServingResponses(OpenAIServing):
                         tool_name:
                         exit_stack.enter_async_context(
                             self.tool_server.new_session(tool_name))
+                        if not request.background else tool_name
                         for tool_name in builtin_tool_list
                     }
                     tool_sessions = {}
                     for tool_name in builtin_tool_list:
                         tool_sessions[tool_name] = (
-                            await tool_session_ctxs[tool_name])
+                            await tool_session_ctxs[tool_name]
+                            if not request.background else
+                            tool_session_ctxs[tool_name])
                 else:
                     assert len(builtin_tool_list) == 0
                     tool_sessions = {}
@@ -332,9 +335,9 @@ class OpenAIServingResponses(OpenAIServing):
                 task = asyncio.create_task(
                     self._run_background_request(
                         request,
+                        context,
                         sampling_params,
                         result_generator,
-                        context,
                         model_name,
                         tokenizer,
                         request_metadata,
@@ -353,9 +356,9 @@ class OpenAIServingResponses(OpenAIServing):
             if request.stream:
                 return self.responses_stream_generator(
                     request,
+                    context,
                     sampling_params,
                     result_generator,
-                    context,
                     model_name,
                     tokenizer,
                     request_metadata,
@@ -364,9 +367,9 @@ class OpenAIServingResponses(OpenAIServing):
             try:
                 return await self.responses_full_generator(
                     request,
+                    context,
                     sampling_params,
                     result_generator,
-                    context,
                     model_name,
                     tokenizer,
                     request_metadata,
@@ -683,25 +686,34 @@ class OpenAIServingResponses(OpenAIServing):
     async def _run_background_request(
         self,
         request: ResponsesRequest,
+        context: ConversationContext,
         *args,
         **kwargs,
     ):
-        try:
-            response = await self.responses_full_generator(
-                request, *args, **kwargs)
-        except Exception as e:
-            logger.exception("Background request failed for %s",
-                             request.request_id)
-            response = self.create_error_response(str(e))
+        async with AsyncExitStack() as exit_stack:
+            try:
+                tool_list = context.list_lazy_init_tools()
+                for tool_name in tool_list:
+                    tool_session_ctx = exit_stack.enter_async_context(
+                        self.tool_server.new_session(tool_name))
+                    context.tool_sessions[tool_name] = await tool_session_ctx
 
-        if isinstance(response, ErrorResponse):
-            # If the request has failed, update the status to "failed".
-            response_id = request.request_id
-            async with self.response_store_lock:
-                stored_response = self.response_store.get(response_id)
-                assert stored_response is not None
-                if stored_response.status not in ("completed", "cancelled"):
-                    stored_response.status = "failed"
+                response = await self.responses_full_generator(
+                    request, context, *args, **kwargs)
+            except Exception as e:
+                logger.exception("Background request failed for %s",
+                                 request.request_id)
+                response = self.create_error_response(str(e))
+
+            if isinstance(response, ErrorResponse):
+                # If the request has failed, update the status to "failed".
+                response_id = request.request_id
+                async with self.response_store_lock:
+                    stored_response = self.response_store.get(response_id)
+                    assert stored_response is not None
+                    if stored_response.status not in ("completed",
+                                                      "cancelled"):
+                        stored_response.status = "failed"
 
     async def retrieve_responses(
         self,
@@ -1173,9 +1185,9 @@ class OpenAIServingResponses(OpenAIServing):
 
         final_response = await self.responses_full_generator(
             request,
+            context,
             sampling_params,
             empty_async_generator(),
-            context,
             model_name,
             tokenizer,
             request_metadata,

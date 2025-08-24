@@ -36,6 +36,10 @@ class ConversationContext(ABC):
     def render_for_completion(self) -> list[int]:
         pass
 
+    @abstractmethod
+    def list_lazy_init_tools(self) -> list[str]:
+        pass
+
 
 class SimpleContext(ConversationContext):
 
@@ -53,6 +57,9 @@ class SimpleContext(ConversationContext):
 
     def render_for_completion(self) -> list[int]:
         raise NotImplementedError("Should not be called.")
+
+    def list_lazy_init_tools(self) -> list[str]:
+        return []
 
 
 class HarmonyContext(ConversationContext):
@@ -147,6 +154,9 @@ class HarmonyContext(ConversationContext):
                     channel=last_msg.channel,
                     recipient=Role.ASSISTANT)
         ]
+
+    def list_lazy_init_tools(self) -> list[str]:
+        return [k for k, v in self.tool_sessions.items() if isinstance(v, str)]
 
 
 class StreamingHarmonyContext(HarmonyContext):
