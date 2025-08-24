@@ -416,9 +416,9 @@ class OpenAIServingResponses(OpenAIServing):
     async def responses_full_generator(
         self,
         request: ResponsesRequest,
+        context: ConversationContext,
         sampling_params: SamplingParams,
         result_generator: AsyncIterator[ConversationContext],
-        context: ConversationContext,
         model_name: str,
         tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
