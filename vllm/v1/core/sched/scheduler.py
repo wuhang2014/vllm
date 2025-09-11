@@ -10,6 +10,9 @@ from collections.abc import Iterable
 from typing import Any, Optional, Union
 
 from vllm.config import VllmConfig
+from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
+from vllm.distributed.ec_transfer.ec_connector.factory import (
+    ECConnectorFactory)
 from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.factory import (
     KVConnectorFactory)
@@ -94,6 +97,12 @@ class Scheduler(SchedulerInterface):
             self.kv_events_config,
             self.parallel_config.data_parallel_rank,
         )
+
+        # Create ECConnector for the Scheduler.
+        self.ec_connector = None
+        if self.vllm_config.ec_transfer_config is not None:
+            self.ec_connector = ECConnectorFactory.create_connector(
+                config=self.vllm_config, role=ECConnectorRole.SCHEDULER)
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
@@ -218,7 +227,7 @@ class Scheduler(SchedulerInterface):
             new_encoder_compute_budget = encoder_compute_budget
             if request.has_encoder_inputs:
                 (encoder_inputs_to_schedule, num_new_tokens,
-                 new_encoder_compute_budget
+                 new_encoder_compute_budget, external_load_encoder_input
                  ) = self._try_schedule_encoder_inputs(
                      request, request.num_computed_tokens, num_new_tokens,
                      encoder_compute_budget)
@@ -420,7 +429,8 @@ class Scheduler(SchedulerInterface):
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
                         (encoder_inputs_to_schedule, num_new_tokens,
-                         new_encoder_compute_budget
+                         new_encoder_compute_budget,
+                         external_load_encoder_input
                          ) = self._try_schedule_encoder_inputs(
                              request, num_computed_tokens, num_new_tokens,
                              encoder_compute_budget)
@@ -520,6 +530,13 @@ class Scheduler(SchedulerInterface):
                     for i in encoder_inputs_to_schedule:
                         self.encoder_cache_manager.allocate(request, i)
                     encoder_compute_budget = new_encoder_compute_budget
+                # Allocate for external load encoder cache
+                if external_load_encoder_input:
+                    for i in external_load_encoder_input:
+                        self.encoder_cache_manager.allocate(request, i)
+                        if self.ec_connector is not None:
+                            self.ec_connector.update_state_after_alloc(
+                                request, i)
 
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
@@ -605,6 +622,10 @@ class Scheduler(SchedulerInterface):
         if events:
             batch = KVEventBatch(ts=time.time(), events=events)
             self.kv_event_publisher.publish(batch)
+
+        if self.ec_connector is not None:
+            meta = self.ec_connector.build_connector_meta(scheduler_output)
+            scheduler_output.ec_connector_metadata = meta
 
         self._update_after_schedule(scheduler_output)
         return scheduler_output
@@ -695,7 +716,7 @@ class Scheduler(SchedulerInterface):
         num_computed_tokens: int,
         num_new_tokens: int,
         encoder_compute_budget: int,
-    ) -> tuple[list[int], int, int]:
+    ) -> tuple[list[int], int, int, list[int]]:
         """
         Determine which encoder inputs need to be scheduled in the current step,
         and update `num_new_tokens` and encoder token budget accordingly.
@@ -705,6 +726,7 @@ class Scheduler(SchedulerInterface):
         in this step, i.e.,
         [num_computed_tokens, num_computed_tokens + num_new_tokens).
         - It is not already computed and stored in the encoder cache.
+        - It does not exist on remote encoder cache (via ECConnector).
         - There is sufficient encoder token budget to process it.
         - The encoder cache has space to store it.
 
@@ -716,17 +738,22 @@ class Scheduler(SchedulerInterface):
         blocks and externally cached blocks (via KVConnector).
         """
         if num_new_tokens == 0 or not request.has_encoder_inputs:
-            return [], num_new_tokens, encoder_compute_budget
+            return [], num_new_tokens, encoder_compute_budget, []
         encoder_inputs_to_schedule: list[int] = []
         mm_positions = request.mm_positions
         assert mm_positions is not None
         assert len(mm_positions) > 0
+
+        # Check remote cache first
+        if self.ec_connector is not None:
+            remote_cache_bools = self.ec_connector.check_caches_exist(request)
 
         # NOTE: since scheduler operates on the request level (possibly with
         # multiple encoder inputs per request), we need to create temporary
         # trackers for accounting at the encoder input level.
         mm_hashes_to_schedule = set()
         num_tokens_to_schedule = 0
+        external_load_encoder_input = []
         for i, pos_info in enumerate(mm_positions):
             start_pos = pos_info.offset
             num_encoder_tokens = pos_info.length
@@ -796,6 +823,11 @@ class Scheduler(SchedulerInterface):
                     num_new_tokens = 0
                 break
 
+            if self.ec_connector is not None and remote_cache_bools[i]:
+                mm_hashes_to_schedule.add(request.mm_hashes[i])
+                external_load_encoder_input.append(i)
+                continue
+
             num_tokens_to_schedule += num_encoder_tokens
             encoder_compute_budget -= num_encoder_tokens
             mm_hashes_to_schedule.add(request.mm_hashes[i])
@@ -805,6 +837,7 @@ class Scheduler(SchedulerInterface):
             encoder_inputs_to_schedule,
             num_new_tokens,
             encoder_compute_budget,
+            external_load_encoder_input,
         )
 
     def get_grammar_bitmask(
