@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import torch
+
+if TYPE_CHECKING:
+    from vllm.v1.core.sched.output import SchedulerOutput
 
 
 class LogprobsLists(NamedTuple):
@@ -42,7 +47,7 @@ class LogprobsTensors(NamedTuple):
 
     @staticmethod
     def empty_cpu(num_positions: int,
-                  num_tokens_per_position: int) -> "LogprobsTensors":
+                  num_tokens_per_position: int) -> LogprobsTensors:
         """Create empty LogprobsTensors on CPU."""
 
         logprob_token_ids = torch.empty(
@@ -74,6 +79,13 @@ class SamplerOutput:
 @dataclass
 class KVConnectorOutput:
     # [req_ids]
+    finished_sending: Optional[set[str]] = None
+    finished_recving: Optional[set[str]] = None
+
+
+@dataclass
+class ECConnectorOutput:
+    # [mm_hash]
     finished_sending: Optional[set[str]] = None
     finished_recving: Optional[set[str]] = None
 
@@ -113,6 +125,8 @@ class ModelRunnerOutput:
 
     kv_connector_output: Optional[KVConnectorOutput] = None
 
+    ec_connector_output: Optional[ECConnectorOutput] = None
+
     # req_id -> num_nans_in_logits
     num_nans_in_logits: Optional[dict[str, int]] = None
 
@@ -125,3 +139,41 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
                                               prompt_logprobs_dict={},
                                               pooler_output=[],
                                               num_nans_in_logits=None)
+
+
+def make_empty_encoder_model_runner_output(
+    scheduler_output: SchedulerOutput, ) -> ModelRunnerOutput:
+    """
+    Create a ModelRunnerOutput stub that contains the correct
+    per-request bookkeeping but no generated data yet.
+    """
+    if not scheduler_output.num_scheduled_tokens:
+        return EMPTY_MODEL_RUNNER_OUTPUT
+
+    # Convert to list so we get a deterministic, indexable sequence
+    req_ids: list[str] = list(scheduler_output.num_scheduled_tokens.keys())
+
+    # Give every request its own contiguous index
+    req_id_to_index: dict[str, int] = {
+        rid: idx
+        for idx, rid in enumerate(req_ids)
+    }
+
+    # No tokens generated yet ⇒ one empty list per request
+    sampled_token_ids: list[list[int]] = [[0] for _ in req_ids]
+
+    # Pooler outputs are not available yet ⇒ use None placeholders
+    pooler_output: list[Optional[torch.Tensor]] = [None for _ in req_ids]
+
+    return ModelRunnerOutput(
+        req_ids=req_ids,
+        req_id_to_index=req_id_to_index,
+        sampled_token_ids=sampled_token_ids,
+        spec_token_ids=None,
+        logprobs=None,
+        prompt_logprobs_dict={},
+        pooler_output=pooler_output,
+        kv_connector_output=None,
+        ec_connector_output=None,
+        num_nans_in_logits=None,
+    )
