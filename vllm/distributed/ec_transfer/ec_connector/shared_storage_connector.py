@@ -20,12 +20,18 @@ logger = init_logger(__name__)
 
 @dataclass
 class MMMeta:
-    mm_hash: str
-    num_token: int
+    # mm_hash: str
+    # num_token: int
+    request_id: str = ""
+    input_ids: list[int] = None
+
+    # @staticmethod
+    # def make_meta(mm_hash, num_token) -> "MMMeta":
+    #     return MMMeta(mm_hash=mm_hash, num_token=num_token)
 
     @staticmethod
-    def make_meta(mm_hash, num_token) -> "MMMeta":
-        return MMMeta(mm_hash=mm_hash, num_token=num_token)
+    def make_mm_meta(request_id: str, input_ids: list[int]) -> "MMMeta":
+        return MMMeta(request_id=request_id, input_ids=input_ids)
 
 
 @dataclass
@@ -38,6 +44,9 @@ class ECSharedStorageConnectorMetadata(ECConnectorMetadata):
     def add_mm_data(self, mm_data: MMMeta):
         self.mm_datas.append(mm_data)
 
+    def add_mm_metadata(self, request_id: str, input_ids: list[int]):
+        self.mm_datas.append(MMMeta.make_mm_meta(request_id, input_ids))
+
 
 class ECSharedStorageConnector(ECConnectorBase):
     # NOTE: This is Simple debug implementation of the EC connector.
@@ -47,6 +56,7 @@ class ECSharedStorageConnector(ECConnectorBase):
         super().__init__(vllm_config=vllm_config, role=role)
         # req_id -> index -> MMMeta
         self._mm_datas_need_loads: dict[str, int] = {}
+        self._mm_datas: dict[str, list[int]] = {}
         transfer_config = vllm_config.ec_transfer_config
         self._storage_path = transfer_config.get_from_extra_config(
             "shared_storage_path", "/tmp")
@@ -71,15 +81,25 @@ class ECSharedStorageConnector(ECConnectorBase):
                 "In connector.start_load_caches, but the connector metadata "
                 "is None")
             return
-        # Load the EC for each mm data
+
         for mm_data in metadata.mm_datas:
-            if mm_data.mm_hash in encoder_cache:
-                continue
-            filename = self._generate_filename_debug(mm_data.mm_hash)
-            ec_cache = safetensors.torch.load_file(filename)["ec_cache"].cuda()
-            encoder_cache[mm_data.mm_hash] = ec_cache
-            logger.debug("Success load encoder cache for hash %s",
-                         mm_data.mm_hash)
+            for input_id in mm_data.input_ids:
+                if input_id in encoder_cache.get(mm_data.request_id, {}):
+                    continue
+                filename = self._generate_filename_debug(
+                    f"{mm_data.request_id}_{input_id}")
+                if not os.path.exists(filename):
+                    logger.warning("Encoder cache file %s does not exist",
+                                   filename)
+                    continue
+                ec_cache = safetensors.torch.load_file(
+                    filename)["ec_cache"].cuda()
+                if mm_data.request_id not in encoder_cache:
+                    encoder_cache[mm_data.request_id] = {}
+                encoder_cache[mm_data.request_id][input_id] = ec_cache
+                logger.debug(
+                    "Success load encoder cache for request_id %s, input_id %d",
+                    mm_data.request_id, input_id)
 
     def save_caches(self, **kwargs) -> None:
         """Start saving the EC cache for each mm_datas from encoder cache
@@ -93,12 +113,20 @@ class ECSharedStorageConnector(ECConnectorBase):
         encoder_cache = kwargs.get("encoder_cache")
         mm_hash = kwargs.get("mm_hash")
         assert encoder_cache is not None
-        assert mm_hash is not None
-        filename = self._generate_filename_debug(mm_hash)
-        ec_cache = encoder_cache[mm_hash]
+        if mm_hash:
+            filename = self._generate_filename_debug(mm_hash)
+            ec_cache = encoder_cache[mm_hash]
+        else:
+            request_id = kwargs.get("request_id")
+            input_id = kwargs.get("input_id")
+            filename = self._generate_filename_debug(
+                f"{request_id}_{input_id}")
+            ec_cache = encoder_cache[request_id][input_id]
         tensors = {"ec_cache": ec_cache.detach().cpu()}
         safetensors.torch.save_file(tensors, filename)
-        logger.debug("Save cache successful for mm_hash %s", mm_hash)
+        logger.debug(
+            "Save cache successful for mm_hash %s, request_id %s, input_id %s",
+            mm_hash, request_id, input_id)
 
     def wait_for_save(self):
         return
@@ -117,8 +145,15 @@ class ECSharedStorageConnector(ECConnectorBase):
             List of bool indicate that ith mm_data exist in cache or not
         """
         result = []
-        for mm_hash in request.mm_hashes:
-            result.append(self._found_match_for_mm_data(mm_hash))
+        request_id = request.request_id
+        for input_id in range(len(request.mm_positions)):
+            if self._found_match_for_mm_data(f"{request_id}_{input_id}"):
+                result.append(True)
+            else:
+                result.append(False)
+
+        # for mm_hash in request.mm_hashes:
+        #     result.append(self._found_match_for_mm_data(mm_hash))
         return result
 
     def update_state_after_alloc(
@@ -129,10 +164,11 @@ class ECSharedStorageConnector(ECConnectorBase):
         """
         Update ECConnector state after encoder cache allocation.
         """
-        mm_hash = request.mm_hashes[index]
-        num_encoder_token = request.get_num_encoder_tokens(index)
-        # Insert mm_hash only if this block has not been recorded yet.
-        self._mm_datas_need_loads[mm_hash] = num_encoder_token
+        # mm_hash = request.mm_hashes[index]
+        # num_encoder_token = request.get_num_encoder_tokens(index)
+        # # Insert mm_hash only if this block has not been recorded yet.
+        # self._mm_datas_need_loads[mm_hash] = num_encoder_token
+        self._mm_datas.setdefault(request.request_id, []).append(index)
 
     def build_connector_meta(
         self,
@@ -147,9 +183,12 @@ class ECSharedStorageConnector(ECConnectorBase):
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
         meta = ECSharedStorageConnectorMetadata()
-        for mm_hash, num_encoder_token in self._mm_datas_need_loads.items():
-            meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
-        self._mm_datas_need_loads.clear()
+        for mm_data in self._mm_datas:
+            meta.add_mm_metadata(mm_data, self._mm_datas[mm_data])
+        self._mm_datas.clear()
+        # for mm_hash, num_encoder_token in self._mm_datas_need_loads.items():
+        #     meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
+        # self._mm_datas_need_loads.clear()
         return meta
 
     # ==============================
