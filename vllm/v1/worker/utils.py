@@ -163,6 +163,7 @@ def sanity_check_mm_encoder_outputs(
 def scatter_mm_placeholders(
     embeds: torch.Tensor,
     is_embed: Optional[torch.Tensor],
+    ec_buffer: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Scatter the multimodal embeddings into a contiguous tensor that represents
@@ -176,14 +177,23 @@ def scatter_mm_placeholders(
         is_embed: A boolean mask indicating which positions in the placeholder
             tokens need to be filled with multimodal embeddings.
             Shape: `(num_placeholders, num_embeds)`
+        ec_buffer: If not None, the embeddings will be scattered into this
+            buffer. This is used for EC Connector to avoid extra memory copy.
+            Shape: `(num_placeholders, embed_dim)`
     """
     if is_embed is None:
+        if ec_buffer is not None:
+            ec_buffer.copy_(embeds)
         return embeds
 
-    placeholders = embeds.new_full(
-        (is_embed.shape[0], embeds.shape[-1]),
-        fill_value=torch.nan,
-    )
+    if ec_buffer is not None:
+        placeholders = ec_buffer
+        placeholders.fill_(torch.nan)
+    else:
+        placeholders = embeds.new_full(
+            (is_embed.shape[0], embeds.shape[-1]),
+            fill_value=torch.nan,
+        )
     placeholders[is_embed] = embeds
     return placeholders
 

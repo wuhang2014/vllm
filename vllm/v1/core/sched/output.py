@@ -10,10 +10,10 @@ if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-    from vllm.distributed.ec_transfer.ec_connector.base import (
-        ECConnectorMetadata)
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (
         KVConnectorMetadata)
+    from vllm.distributed.ec_transfer.ec_connector.base import (
+        ECConnectorMetadata)
     from vllm.lora.request import LoRARequest
     from vllm.multimodal.inputs import MultiModalKwargsItem, PlaceholderRange
     from vllm.pooling_params import PoolingParams

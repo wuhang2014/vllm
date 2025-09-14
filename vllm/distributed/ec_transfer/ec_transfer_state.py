@@ -22,14 +22,13 @@ def get_ec_transfer() -> ECConnectorBase:
 def has_ec_transfer() -> bool:
     return _EC_CONNECTOR_AGENT is not None
 
-
 def ensure_ec_transfer_initialized(vllm_config: "VllmConfig") -> None:
     """
     Initialize KV cache transfer parallel group.
     """
 
     global _EC_CONNECTOR_AGENT
-
+    
     if vllm_config.ec_transfer_config is None:
         return
 

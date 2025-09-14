@@ -607,6 +607,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
         default=None,
         description="KVTransfer parameters used for disaggregated serving.")
 
+    ec_transfer_params: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Encoder cache parameters used for disaggregated serving.")
+
     vllm_xargs: Optional[dict[str, Union[str, int, float]]] = Field(
         default=None,
         description=("Additional request parameters with string or "
@@ -702,6 +706,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if self.kv_transfer_params:
             # Pass in kv_transfer_params via extra_args
             extra_args["kv_transfer_params"] = self.kv_transfer_params
+        if self.ec_transfer_params:
+            # Pass in ec_transfer_params via extra_args
+            extra_args["ec_transfer_params"] = self.ec_transfer_params
         return SamplingParams.from_optional(
             n=self.n,
             best_of=self.best_of,
@@ -1103,6 +1110,10 @@ class CompletionRequest(OpenAIBaseModel):
         default=None,
         description="KVTransfer parameters used for disaggregated serving.")
 
+    ec_transfer_params: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Encoder cache parameters used for disaggregated serving.")
+
     vllm_xargs: Optional[dict[str, Union[str, int, float]]] = Field(
         default=None,
         description=("Additional request parameters with string or "
@@ -1196,6 +1207,11 @@ class CompletionRequest(OpenAIBaseModel):
         if self.kv_transfer_params:
             # Pass in kv_transfer_params via extra_args
             extra_args["kv_transfer_params"] = self.kv_transfer_params
+
+        if self.ec_transfer_params:
+            # Pass in ec_transfer_params via extra_args
+            extra_args["ec_transfer_params"] = self.ec_transfer_params
+
         return SamplingParams.from_optional(
             n=self.n,
             best_of=self.best_of,
@@ -1572,6 +1588,8 @@ class CompletionResponse(OpenAIBaseModel):
     # vLLM-specific fields that are not in OpenAI spec
     kv_transfer_params: Optional[dict[str, Any]] = Field(
         default=None, description="KVTransfer parameters.")
+    ec_transfer_params: Optional[dict[str, Any]] = Field(
+        default=None, description="Encoder cache parameters.")
 
 
 class CompletionResponseStreamChoice(OpenAIBaseModel):
@@ -1782,6 +1800,8 @@ class ChatCompletionResponse(OpenAIBaseModel):
     prompt_token_ids: Optional[list[int]] = None
     kv_transfer_params: Optional[dict[str, Any]] = Field(
         default=None, description="KVTransfer parameters.")
+    ec_transfer_params: Optional[dict[str, Any]] = Field(
+        default=None, description="Encoder cache parameters.")
 
 
 class DeltaMessage(OpenAIBaseModel):

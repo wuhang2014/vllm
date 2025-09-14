@@ -31,7 +31,7 @@ import torch
 
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.outputs import ECConnectorOutput, KVConnectorOutput
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -111,14 +111,14 @@ class ECConnectorBase(ABC):
         assert self._connector_metadata is not None
         return self._connector_metadata
 
-    def register_caches(
+    def register_cache(
         self,
-        ec_caches: dict[str, torch.Tensor],
+        ec_cache: torch.Tensor,
     ):
         """
-        Initialize with the EC caches.
+        Initialize with the EC cache.
         Args: 
-            ec_caches: dictionary of encoder cache
+            ec_cache: tensor of encoder cache
         """
         # TODO: Implement this later for P2P feature
         return
@@ -180,13 +180,13 @@ class ECConnectorBase(ABC):
         request: "Request",
     ) -> list[bool]:
         """
-        Check if encoder cache exit for each mm data of requests
-        
+        Check if encoder cache exists for each mm data of requests
+
         Args:
             request (Request): the request object.
 
         Returns:
-            A list bool where ith value is True if cache exist for 
+            A list bool where ith value is True if cache exists for
             ith mm_data of requests
         """
         pass
@@ -226,7 +226,8 @@ class ECConnectorBase(ABC):
         return
 
     def request_finished(
-            self, request: "Request") -> tuple[bool, Optional[dict[str, Any]]]:
+            self, request: "Request", ec_connector_output: ECConnectorOutput,
+        ) -> Optional[dict[str, Any]]:
         """
         Called when a request has finished, before its freed the local
         encoder cached.
@@ -236,4 +237,4 @@ class ECConnectorBase(ABC):
             cached should not be freed until the request_id is returned
             from get_finished().
         """
-        return False, None
+        return None

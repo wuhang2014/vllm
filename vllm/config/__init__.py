@@ -3202,8 +3202,6 @@ class ObservabilityConfig:
 ECProducer = Literal["ec_producer"]
 ECConsumer = Literal["ec_consumer"]
 ECRole = Literal[ECProducer, ECConsumer]
-
-
 @config
 @dataclass
 class ECTransferConfig:

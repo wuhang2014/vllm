@@ -33,7 +33,7 @@ from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
                             EngineCoreOutputs)
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import SchedulerStats
-from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
+from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput, ECConnectorOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
@@ -315,6 +315,11 @@ class Scheduler(SchedulerInterface):
                 for i in encoder_inputs_to_schedule:
                     self.encoder_cache_manager.allocate(request, i)
                 encoder_compute_budget = new_encoder_compute_budget
+                # Allocate for external load encoder cache
+                if external_load_encoder_input:
+                    for i in external_load_encoder_input:
+                        self.encoder_cache_manager.allocate(request, i)
+                        self.ec_connector.update_state_after_alloc(request, i)
 
         # Record the LoRAs in scheduled_running_reqs
         scheduled_loras: set[int] = set()
@@ -535,8 +540,7 @@ class Scheduler(SchedulerInterface):
                     for i in external_load_encoder_input:
                         self.encoder_cache_manager.allocate(request, i)
                         if self.ec_connector is not None:
-                            self.ec_connector.update_state_after_alloc(
-                                request, i)
+                            self.ec_connector.update_state_after_alloc(request, i)
 
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
@@ -925,6 +929,7 @@ class Scheduler(SchedulerInterface):
             new_token_ids = generated_token_ids
             kv_transfer_params = None
             status_before_stop = request.status
+            ec_transfer_params = None
 
             # Check for stop and update request status.
             if new_token_ids:
@@ -944,6 +949,9 @@ class Scheduler(SchedulerInterface):
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
+                if model_runner_output.ec_connector_output:
+                    ec_transfer_params = self._get_ec_xfer_params_on_req_done(
+                        request, model_runner_output.ec_connector_output)
 
             # Extract sample logprobs if needed.
             if request.sampling_params is not None \
@@ -981,6 +989,7 @@ class Scheduler(SchedulerInterface):
                         events=request.take_events(),
                         kv_transfer_params=kv_transfer_params,
                         num_cached_tokens=request.num_cached_tokens,
+                        ec_transfer_params=ec_transfer_params,
                     ))
 
             else:
@@ -998,6 +1007,11 @@ class Scheduler(SchedulerInterface):
         if model_runner_output.kv_connector_output:
             self._update_from_kv_xfer_finished(
                 model_runner_output.kv_connector_output)
+
+        # EC Connector: update state for finished EC Transfers.
+        if model_runner_output.ec_connector_output:
+            self._update_from_ec_xfer_finished(
+                model_runner_output.ec_connector_output)
 
         # Create EngineCoreOutputs for all clients that have requests with
         # outputs in this step.
@@ -1288,3 +1302,20 @@ class Scheduler(SchedulerInterface):
         for req_id in (kv_connector_output.finished_sending or ()):
             logger.debug("Finished sending KV transfer for request %s", req_id)
             self._free_blocks(self.requests[req_id])
+
+    def _get_ec_xfer_params_on_req_done(
+        self,
+        request: Request,
+        ec_connector_output: ECConnectorOutput,
+    ) -> Optional[dict[str, Any]]:
+        """
+        EC Connector: get the ec transfer params when a request is done.
+
+        This is used to inform the front-end that the request is done
+        and any pending EC transfer (save) should be finalized.
+        """
+        if self.ec_connector is None:
+            return None
+
+        return self.ec_connector.request_finished(
+            request, ec_connector_output)
