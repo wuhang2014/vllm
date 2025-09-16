@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 import safetensors
 
@@ -135,7 +135,7 @@ class ECSharedStorageConnector(ECConnectorBase):
         self,
         request: "Request",
         index: Optional[int] = None,
-    ) -> list[bool]:
+    ) -> Union[bool, list[bool]]:
         """
         Check if cache exist externally for each mm_data of request
         
@@ -149,11 +149,7 @@ class ECSharedStorageConnector(ECConnectorBase):
         result = []
         request_id = request.request_id
         if index is not None:
-            if self._found_match_for_mm_data(f"{request_id}_{index}"):
-                result.append(True)
-            else:
-                result.append(False)
-            return result
+            return self._found_match_for_mm_data(f"{request_id}_{index}")
 
         for input_id in range(len(request.mm_positions)):
             if self._found_match_for_mm_data(f"{request_id}_{input_id}"):
