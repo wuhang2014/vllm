@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export VLLM_VERSION=0.10.0
+
 wait_for_server() {
     local port=$1
     timeout 12000 bash -c '
@@ -10,7 +12,7 @@ wait_for_server() {
     ' && return 0 || return 1
 }
 
-MODEL="/path/to/model/Qwen2.5-VL-3B-Instruct"
+MODEL="${MODEL:-Qwen2.5-VL-3B-Instruct}"
 
 LOG_PATH=${LOG_PATH:-./logs}
 mkdir -p "$LOG_PATH"
@@ -93,7 +95,7 @@ start_prefill_decode_worker
 # Proxy
 ###############################################################################
 start_proxy() {
-    python /path/to/vllm/vllm/draft/proxy.py \
+    python proxy.py \
         --host "127.0.0.1" \
         --port "$PROXY_PORT" \
         --encode-servers-urls "http://localhost:$ENCODE_PORT" \
