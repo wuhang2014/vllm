@@ -207,16 +207,17 @@ class ECSharedStorageConnector(ECConnectorBase):
         return os.path.exists(filename)
 
     def _generate_foldername_debug(
-            self,
-            mm_hash: str,
-            create_folder: bool = True,  # <- now defaults to True
+        self,
+        mm_hash: str,
+        create_folder: bool = True,
     ) -> str:
         """
         Return the folder in which the cache for this mm_hash lives.
         If `create_folder` is True (default) the directory is created
         recursively the first time it is needed.
         """
-        foldername = os.path.join(self._storage_path, mm_hash)
+        # foldername = os.path.join(self._storage_path, mm_hash)
+        foldername = self._storage_path
         if create_folder:
             os.makedirs(foldername, exist_ok=True)
         return foldername
@@ -228,6 +229,5 @@ class ECSharedStorageConnector(ECConnectorBase):
         `_generate_foldername_debug` is called with its default
         (`create_folder=True`).
         """
-        foldername = self._generate_foldername_debug(
-            mm_hash)  # <- folder auto-created
-        return os.path.join(foldername, "encoder_cache.safetensors")
+        foldername = self._generate_foldername_debug(mm_hash, False)
+        return os.path.join(foldername, f"{mm_hash}_encoder_cache.safetensors")

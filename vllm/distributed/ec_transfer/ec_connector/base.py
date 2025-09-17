@@ -24,7 +24,7 @@ The class provides the following primitives:
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
@@ -176,17 +176,18 @@ class ECConnectorBase(ABC):
         self,
         request: "Request",
         index: Optional[int] = None,
-    ) -> list[bool]:
+    ) -> Union[bool, list[bool]]:
         """
-        Check if encoder cache exit for each mm data of requests
-        
+        Check if encoder cache exists for each mm data of requests.
+
         Args:
             request (Request): the request object.
             index (Optional[int]): the index of the request in the batch.
 
         Returns:
-            A list bool where ith value is True if cache exist for 
-            ith mm_data of requests
+            Union[bool, list[bool]]: True if cache exists for the specific
+            index, or a list of booleans indicating the existence of caches
+            for all indexes.
         """
         pass
 
