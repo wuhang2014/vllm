@@ -13,6 +13,7 @@ wait_for_server() {
 }
 
 MODEL="${MODEL:-Qwen2.5-VL-3B-Instruct}"
+MODEL_NAME="${MODEL_NAME:-qwen2.5-vl-3b-instruct}"
 
 LOG_PATH=${LOG_PATH:-./logs}
 mkdir -p "$LOG_PATH"
@@ -44,6 +45,7 @@ start_encoder_worker() {
         --max-num-seqs 128 \
         --max-model-len 3072 \
         --max-num-batched-tokens 40000 \
+        --served-model-name "$MODEL_NAME" \
         --enforce-eager \
         --ec-transfer-config '{
             "ec_connector": "ECSharedStorageConnector",
@@ -72,6 +74,7 @@ start_prefill_decode_worker() {
         --max-num-seqs 128 \
         --max-model-len 3072 \
         --max-num-batched-tokens 40000 \
+        --served-model-name "$MODEL_NAME" \
         --enforce-eager \
         --ec-transfer-config '{
             "ec_connector": "ECSharedStorageConnector",

@@ -14,6 +14,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:
     from vllm.v1.request import Request
+import time
 
 logger = init_logger(__name__)
 
@@ -121,7 +122,7 @@ class ECSharedStorageConnector(ECConnectorBase):
             input_id = kwargs.get("input_id")
             filename = self._generate_filename_debug(
                 f"{request_id}_{input_id}")
-            ec_cache = encoder_cache[request_id][input_id]
+            ec_cache = encoder_cache[request_id][input_id][0:3, :]
         tensors = {"ec_cache": ec_cache.detach().cpu()}
         safetensors.torch.save_file(tensors, filename)
         logger.debug(
@@ -204,7 +205,12 @@ class ECSharedStorageConnector(ECConnectorBase):
         """Check if the cache is hit for the request.
         """
         filename = self._generate_filename_debug(mm_hash)
-        return os.path.exists(filename)
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            if os.path.exists(filename):
+                return True
+            time.sleep(0.1)
+        return False
 
     def _generate_foldername_debug(
         self,
