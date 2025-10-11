@@ -62,6 +62,8 @@ class DisaggWorker:
 
     async def _handle_request(self, req_type: bytes, req_data: bytes):
         if req_type == RequestType.ENCODE:
+            import time
+            print("DisaggWorker encode start|", time.time())
             req = self.decoder_generate.decode(req_data)
             req.sampling_params.max_tokens = 1
             await self._encode_handler(req)

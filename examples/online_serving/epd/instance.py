@@ -66,6 +66,10 @@ class ServerState:
             request_data.pop("stream_options", None)
             if "max_completion_tokens" in request_data:
                 request_data["max_completion_tokens"] = 1
+            import time
+
+            print("Proxy send request|", time.time())
+
         async with self.request_context():
             response = await self.session.post(
                 f"{self.url}{api}",

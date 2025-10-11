@@ -122,6 +122,8 @@ class Proxy(EngineClient):
         idx = (hash(request.request_id) & 0x7FFFFFFF) % len(
             self.to_encode_sockets)
         socket = self.to_encode_sockets[idx]
+        import time
+        print("Proxy send encode|", time.time())
         await socket.send_multipart(msg, copy=False)
 
         response = await q.get()
@@ -199,6 +201,8 @@ class Proxy(EngineClient):
         priority: int = 0,
         data_parallel_rank: Optional[int] = None,
     ):
+        import time
+        print("Proxy generate start|", time.time())
         if self.output_handler is None:
             self.output_handler = asyncio.create_task(
                 self._run_output_handler())

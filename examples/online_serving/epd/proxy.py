@@ -118,6 +118,9 @@ async def _handle_completions(api: str, request: Request):
     """Handle chat completion requests."""
     try:
         request_data = await request.json()
+        import time
+
+        print("Proxy receive request|", time.time())
         request_id = request.headers.get("x-request-id")
         if not request_id:
             request_id = str(uuid.uuid4())

@@ -588,6 +588,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if handler is None:
         return base(raw_request).create_error_response(
             message="The model does not support Completions API")
+    import time
+    print("Create completion start|", time.time())
 
     try:
         generator = await handler.create_completion(request, raw_request)
